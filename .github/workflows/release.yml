@@ -1,0 +1,132 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build & Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup JDK 25
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 25
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+
+      - name: Build
+        run: ./gradlew build --warning-mode=all
+
+      - name: Resolve artifact
+        id: artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          jars=(build/libs/*.jar)
+          if [ "${#jars[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one jar in build/libs, found ${#jars[@]}: ${jars[*]:-none}"
+            ls -la build/libs || true
+            exit 1
+          fi
+          jar="${jars[0]}"
+          name="$(basename "$jar")"
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+          echo "path=${jar}" >> "$GITHUB_OUTPUT"
+          echo "Resolved artifact: ${name}"
+
+      - name: Verify manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          unzip -p "${{ steps.artifact.outputs.path }}" META-INF/MANIFEST.MF > /tmp/manifest.txt
+          echo "--- manifest ---"
+          cat /tmp/manifest.txt
+          echo "----------------"
+          grep -q '^Main-Class: io\.github\.pumpkinxd\.hmcl\.dlunlocker\.Launcher' /tmp/manifest.txt \
+            || { echo "::error::Main-Class missing"; exit 1; }
+          grep -q '^Premain-Class: io\.github\.pumpkinxd\.hmcl\.dlunlocker\.Agent' /tmp/manifest.txt \
+            || { echo "::error::Premain-Class missing"; exit 1; }
+          echo "manifest OK"
+
+      - name: Generate checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd build/libs
+          sha256sum "${{ steps.artifact.outputs.name }}" > "${{ steps.artifact.outputs.name }}.sha256"
+          cat "${{ steps.artifact.outputs.name }}.sha256"
+
+      - name: Read changelog (optional)
+        id: changelog
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f CHANGELOG.md ]; then
+            BODY="$(sed '/___/Q' CHANGELOG.md | sed 1d)"
+          else
+            BODY=""
+          fi
+          delimiter="$(openssl rand -hex 8)"
+          {
+            echo "body<<${delimiter}"
+            printf '%s\n' "$BODY"
+            echo "${delimiter}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          case "$TAG" in
+            v*) ;;
+            *) echo "::error::ref '$TAG' is not a v* tag; run this workflow from a tag, not a branch"
+               exit 1 ;;
+          esac
+
+          args=(--title "$TAG")
+          if [ -n "${BODY:-}" ]; then
+            args+=(--notes "$BODY")
+          else
+            args+=(--generate-notes)
+          fi
+
+          ver="${JAR%.jar}"
+          ver="${ver#HMCL_DL_Unlocker-}"
+          case "$ver" in
+            *-alpha*|*-beta*|*-rc*|*-pre*|*SNAPSHOT*) args+=(--prerelease) ;;
+            *) case "$TAG" in *-*) args+=(--prerelease) ;; esac ;;
+          esac
+          echo "Tag: $TAG"
+          echo "Version: $ver"
+          gh release create "$TAG" \
+            "build/libs/${JAR}" \
+            "build/libs/${JAR}.sha256" \
+            "${args[@]}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          BODY: ${{ steps.changelog.outputs.body }}
+          JAR: ${{ steps.artifact.outputs.name }}
