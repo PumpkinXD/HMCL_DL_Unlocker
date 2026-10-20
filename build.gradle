@@ -1,0 +1,50 @@
+plugins {
+    id 'java'
+    id 'com.gradleup.shadow' version("9.6.1")
+}
+
+group = 'io.github.pumpkinxd.hmcl_dl_unlocker'
+version = '0.0.1-alpha.2026.10.20'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Source: https://mvnrepository.com/artifact/net.bytebuddy/byte-buddy
+    implementation 'net.bytebuddy:byte-buddy:1.18.15'
+
+    testImplementation platform('org.junit:junit-bom:6.0.0')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('jar') {
+    enabled = false
+}
+
+tasks.named('shadowJar') {
+    archiveBaseName = 'HMCL_DL_Unlocker'
+//    archiveVersion = ''
+    archiveClassifier = ''
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+
+    relocate 'net.bytebuddy', 'io.github.pumpkinxd.hmcl_dl_unlocker.shaded.net.bytebuddy'
+
+    manifest {
+        attributes(
+                'Main-Class':              'io.github.pumpkinxd.hmcl_dl_unlocker.Launcher',
+                'Premain-Class':           'io.github.pumpkinxd.hmcl_dl_unlocker.Agent',
+                'Can-Redefine-Classes':    'false',
+                'Can-Retransform-Classes': 'false'
+        )
+    }
+}
+
+tasks.named('assemble') {
+    dependsOn tasks.named('shadowJar')
+}
+
+test {
+    useJUnitPlatform()
+}
