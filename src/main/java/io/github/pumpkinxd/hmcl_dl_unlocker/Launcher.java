@@ -80,7 +80,9 @@ public final class Launcher {
 
     // ---------- 目标探测 ----------
 
-    /** 依次搜索：补丁 jar 所在目录 → 当前工作目录 → 用户主目录。jar 优先于 exe。 */
+    /**
+     * 依次搜索：补丁 jar 所在目录 → 当前工作目录 → 用户主目录。jar 优先于 exe。
+     */
     private static Path findHmcl(Path self) {
         List<Path> searchDirs = new ArrayList<>();
         Path parent = self.toAbsolutePath().getParent();
@@ -157,7 +159,9 @@ public final class Launcher {
     }
     // ---------- 杂项 ----------
 
-    /** 附加 JVM 参数，用于内存设置等。变量名沿用 HMCL 官方 run 任务里的 HMCL_JAVA_OPTS。 */
+    /**
+     * 附加 JVM 参数，用于内存设置等。变量名沿用 HMCL 官方 run 任务里的 HMCL_JAVA_OPTS。
+     */
     private static List<String> extraVmOptions() {
         String raw = System.getenv("HMCL_PATCH_JAVA_OPTS");
         if (raw == null || raw.isBlank()) {
@@ -169,7 +173,9 @@ public final class Launcher {
         return Arrays.stream(raw.trim().split("\\s+")).filter(s -> !s.isEmpty()).toList();
     }
 
-    /** 跳过第一个位置参数（HMCL 路径）与 --dry-run，其余原样透传给 HMCL。 */
+    /**
+     * 跳过第一个位置参数（HMCL 路径）与 --dry-run，其余原样透传给 HMCL。
+     */
     private static List<String> forwardArgs(String[] args) {
         List<String> result = new ArrayList<>();
         for (int i = (args.length > 0 && !args[0].startsWith("-")) ? 1 : 0; i < args.length; i++) {

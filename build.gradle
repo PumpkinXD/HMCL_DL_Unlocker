@@ -4,7 +4,7 @@ plugins {
 }
 
 group = 'io.github.pumpkinxd.hmcl_dl_unlocker'
-version = '0.0.1-alpha.2026.10.20'
+version = '0.0.1-alpha.2026.10.21'
 
 repositories {
     mavenCentral()
@@ -37,9 +37,9 @@ tasks.named('shadowJar') {
 
     manifest {
         attributes(
-                'Main-Class':              'io.github.pumpkinxd.hmcl_dl_unlocker.Launcher',
-                'Premain-Class':           'io.github.pumpkinxd.hmcl_dl_unlocker.Agent',
-                'Can-Redefine-Classes':    'false',
+                'Main-Class': 'io.github.pumpkinxd.hmcl_dl_unlocker.Launcher',
+                'Premain-Class': 'io.github.pumpkinxd.hmcl_dl_unlocker.Agent',
+                'Can-Redefine-Classes': 'false',
                 'Can-Retransform-Classes': 'false'
         )
     }
