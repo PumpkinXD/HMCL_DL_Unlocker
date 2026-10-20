@@ -11,8 +11,6 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
@@ -150,92 +148,13 @@ public final class Launcher {
     // ---------- Java 探测 ----------
 
     private static Path findJava() {
-        String exeName = WINDOWS ? "java.exe" : "java";
-
-        List<Path> candidates = new ArrayList<>();
-        candidates.add(Paths.get(System.getProperty("java.home", ""), "bin", exeName));
-        String javaHome = System.getenv("JAVA_HOME");
-        if (javaHome != null && !javaHome.isBlank()) {
-            candidates.add(Paths.get(javaHome, "bin", exeName));
-        }
-        candidates.add(Paths.get(exeName)); // PATH
-
-        for (Path c : candidates) {
-            if (Files.isExecutable(c) && javaMajor(c) >= MIN_JAVA_VERSION) {
-                return c;
-            }
-        }
-
-        if (WINDOWS) {
-            String pf = System.getenv("ProgramFiles");
-            String localAppData = System.getenv("LOCALAPPDATA");
-            List<Path> roots = new ArrayList<>();
-            if (pf != null) {
-                roots.add(Paths.get(pf, "Java"));
-                roots.add(Paths.get(pf, "Eclipse Adoptium"));
-                roots.add(Paths.get(pf, "Zulu"));
-            }
-            if (localAppData != null) {
-                roots.add(Paths.get(localAppData, "Programs"));
-            }
-            for (Path root : roots) {
-                Path found = scanForJava(root, exeName, 3);
-                if (found != null) {
-                    return found;
-                }
-            }
-        }
-        return null;
+        return ProcessHandle.current()
+                .info()
+                .command()
+                .map(Paths::get)
+                .orElseGet(() -> Paths.get(System.getProperty("java.home"), "bin",
+                        WINDOWS ? "java.exe" : "java"));
     }
-
-    private static Path scanForJava(Path root, String exeName, int maxDepth) {
-        if (!Files.isDirectory(root)) {
-            return null;
-        }
-        try (var stream = Files.walk(root, maxDepth)) {
-            return stream
-                    .filter(p -> p.getFileName().toString().equalsIgnoreCase(exeName))
-                    .filter(Files::isExecutable)
-                    .filter(p -> javaMajor(p) >= MIN_JAVA_VERSION)
-                    .findFirst()
-                    .orElse(null);
-        } catch (IOException | RuntimeException e) {
-            return null;
-        }
-    }
-
-    private static int javaMajor(Path javaExe) {
-        try {
-            Process process = new ProcessBuilder(javaExe.toString(), "-version")
-                    .redirectErrorStream(true)
-                    .start();
-            String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-            process.waitFor();
-
-            Matcher matcher = Pattern.compile("version \"([^\"]+)\"").matcher(output);
-            if (!matcher.find()) {
-                return -1;
-            }
-            String version = matcher.group(1);
-            if (version.startsWith("1.")) {
-                String[] parts = version.split("\\.");
-                return parts.length > 1 ? parseIntSafe(parts[1]) : -1;
-            }
-            int dot = version.indexOf('.');
-            return parseIntSafe(dot > 0 ? version.substring(0, dot) : version);
-        } catch (Exception e) {
-            return -1;
-        }
-    }
-
-    private static int parseIntSafe(String s) {
-        try {
-            return Integer.parseInt(s.trim());
-        } catch (NumberFormatException e) {
-            return -1;
-        }
-    }
-
     // ---------- 杂项 ----------
 
     /** 附加 JVM 参数，用于内存设置等。变量名沿用 HMCL 官方 run 任务里的 HMCL_JAVA_OPTS。 */
