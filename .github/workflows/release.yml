@@ -4,6 +4,9 @@ on:
   push:
     tags:
       - "v*"
+  # Intentionally no `tag` input. Dispatching lets you pick a ref in the UI,
+  # so the checkout and the released name always agree. A free-form tag input
+  # would build the default branch while publishing under an unrelated name.
   workflow_dispatch:
 
 permissions:
@@ -38,6 +41,7 @@ jobs:
       - name: Build
         run: ./gradlew build --warning-mode=all
 
+      # The artifact carries a version number, so never hardcode its name.
       - name: Resolve artifact
         id: artifact
         shell: bash
@@ -60,14 +64,25 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Exact string compare: no regex escaping, and a package rename only
+          # needs this one place changed.
+          PKG='io.github.pumpkinxd.hmcl_dl_unlocker'
+
           unzip -p "${{ steps.artifact.outputs.path }}" META-INF/MANIFEST.MF > /tmp/manifest.txt
           echo "--- manifest ---"
           cat /tmp/manifest.txt
           echo "----------------"
-          grep -q '^Main-Class: io\.github\.pumpkinxd\.hmcl\.dlunlocker\.Launcher' /tmp/manifest.txt \
-            || { echo "::error::Main-Class missing"; exit 1; }
-          grep -q '^Premain-Class: io\.github\.pumpkinxd\.hmcl\.dlunlocker\.Agent' /tmp/manifest.txt \
-            || { echo "::error::Premain-Class missing"; exit 1; }
+
+          got="$(sed -n 's/^Main-Class: //p' /tmp/manifest.txt | tr -d '\r')"
+          want="${PKG}.Launcher"
+          [ "$got" = "$want" ] \
+            || { echo "::error::Main-Class is '$got', expected '$want'"; exit 1; }
+
+          got="$(sed -n 's/^Premain-Class: //p' /tmp/manifest.txt | tr -d '\r')"
+          want="${PKG}.Agent"
+          [ "$got" = "$want" ] \
+            || { echo "::error::Premain-Class is '$got', expected '$want'"; exit 1; }
+
           echo "manifest OK"
 
       - name: Generate checksum
@@ -100,6 +115,8 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Guard: dispatching from a branch would otherwise publish a release
+          # named after that branch. Require a v* tag.
           case "$TAG" in
             v*) ;;
             *) echo "::error::ref '$TAG' is not a v* tag; run this workflow from a tag, not a branch"
@@ -112,7 +129,8 @@ jobs:
           else
             args+=(--generate-notes)
           fi
-
+          # Pre-release if the version part carries a qualifier,
+          # e.g. HMCL_DL_Unlocker-0.0.1-alpha.2026.10.20.jar
           ver="${JAR%.jar}"
           ver="${ver#HMCL_DL_Unlocker-}"
           case "$ver" in
