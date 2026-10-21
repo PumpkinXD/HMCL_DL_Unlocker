@@ -86,14 +86,30 @@ jobs:
           # needs this one place changed.
           PKG='io.github.pumpkinxd.hmcl_dl_unlocker'
 
+          # unzip exits 1 on warnings, and the .exe artifact ALWAYS trips one:
+          #   "N extra bytes at beginning or within zipfile"
+          # That prefix is the prepended Launch5j launcher -- the artifact is
+          # working exactly as intended. So 0 and 1 both mean success; only
+          # >= 2 means the file is genuinely unreadable.
+          read_manifest() {
+            local f="$1" rc=0
+            unzip -p "$f" META-INF/MANIFEST.MF > /tmp/manifest.txt 2>/tmp/unzip.err || rc=$?
+            if [ -s /tmp/unzip.err ]; then
+              cat /tmp/unzip.err >&2
+            fi
+            if [ "$rc" -ge 2 ] || [ ! -s /tmp/manifest.txt ]; then
+              echo "::error::cannot read META-INF/MANIFEST.MF from $f (unzip exit $rc)"
+              return 1
+            fi
+          }
+
           # The whole point of the wrapped artifacts is that they are still
-          # valid jars, so java -javaagent:<exe>
-          # and -javaagent:<sh> work. Reading the manifest out of each one with
-          # unzip is the check that this actually held.
+          # valid jars, so java -javaagent:<exe> and -javaagent:<sh> work.
+          # Reading the manifest out of each one is the check that this held.
           for f in "${{ steps.artifact.outputs.name }}" \
                    "${{ steps.artifact.outputs.exe }}" \
                    "${{ steps.artifact.outputs.sh }}"; do
-            unzip -p "build/libs/$f" META-INF/MANIFEST.MF > /tmp/manifest.txt
+            read_manifest "build/libs/$f"
             echo "--- manifest: $f ---"
             cat /tmp/manifest.txt
             echo "--------------------"
