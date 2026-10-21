@@ -41,26 +41,47 @@ jobs:
       - name: Build
         run: ./gradlew build --warning-mode=all
 
-      # The artifact carries a version number, so never hardcode its name.
-      - name: Resolve artifact
+      # `assemble` depends on `makeWrapped`, so build/libs holds three
+      # artifacts that share one version stem:
+      #   <stem>.jar   plain fat jar
+      #   <stem>.exe   [Launch5j launcher][jar]
+      #   <stem>.sh    [sh stub][jar]
+      - name: Resolve artifacts
         id: artifact
         shell: bash
         run: |
           set -euo pipefail
           shopt -s nullglob
+
           jars=(build/libs/*.jar)
           if [ "${#jars[@]}" -ne 1 ]; then
             echo "::error::expected exactly one jar in build/libs, found ${#jars[@]}: ${jars[*]:-none}"
             ls -la build/libs || true
             exit 1
           fi
+
           jar="${jars[0]}"
           name="$(basename "$jar")"
-          echo "name=${name}" >> "$GITHUB_OUTPUT"
-          echo "path=${jar}" >> "$GITHUB_OUTPUT"
-          echo "Resolved artifact: ${name}"
+          stem="${name%.jar}"
+          exe="${stem}.exe"
+          sh="${stem}.sh"
 
-      - name: Verify manifest
+          for f in "$exe" "$sh"; do
+            if [ ! -f "build/libs/$f" ]; then
+              echo "::error::missing wrapped artifact build/libs/$f (did makeWrapped run?)"
+              ls -la build/libs || true
+              exit 1
+            fi
+          done
+
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+          echo "path=${jar}"   >> "$GITHUB_OUTPUT"
+          echo "stem=${stem}"  >> "$GITHUB_OUTPUT"
+          echo "exe=${exe}"    >> "$GITHUB_OUTPUT"
+          echo "sh=${sh}"      >> "$GITHUB_OUTPUT"
+          echo "Resolved: ${name} / ${exe} / ${sh}"
+
+      - name: Verify manifests
         shell: bash
         run: |
           set -euo pipefail
@@ -68,30 +89,58 @@ jobs:
           # needs this one place changed.
           PKG='io.github.pumpkinxd.hmcl_dl_unlocker'
 
-          unzip -p "${{ steps.artifact.outputs.path }}" META-INF/MANIFEST.MF > /tmp/manifest.txt
-          echo "--- manifest ---"
-          cat /tmp/manifest.txt
-          echo "----------------"
+          # The whole point of the wrapped artifacts is that they are still
+          # valid jars, so java -javaagent:<exe> and -javaagent:<sh> work.
+          # Reading the manifest out of each one with unzip is the check that
+          # this actually held -- a silently broken exe would otherwise only
+          # show up as "double-click does nothing" for end users.
+          for f in "${{ steps.artifact.outputs.name }}" \
+                   "${{ steps.artifact.outputs.exe }}" \
+                   "${{ steps.artifact.outputs.sh }}"; do
+            unzip -p "build/libs/$f" META-INF/MANIFEST.MF > /tmp/manifest.txt
+            echo "--- manifest: $f ---"
+            cat /tmp/manifest.txt
+            echo "--------------------"
 
-          got="$(sed -n 's/^Main-Class: //p' /tmp/manifest.txt | tr -d '\r')"
-          want="${PKG}.Launcher"
-          [ "$got" = "$want" ] \
-            || { echo "::error::Main-Class is '$got', expected '$want'"; exit 1; }
+            got="$(sed -n 's/^Main-Class: //p' /tmp/manifest.txt | tr -d '\r')"
+            want="${PKG}.Launcher"
+            [ "$got" = "$want" ] \
+              || { echo "::error::$f: Main-Class is '$got', expected '$want'"; exit 1; }
 
-          got="$(sed -n 's/^Premain-Class: //p' /tmp/manifest.txt | tr -d '\r')"
-          want="${PKG}.Agent"
-          [ "$got" = "$want" ] \
-            || { echo "::error::Premain-Class is '$got', expected '$want'"; exit 1; }
+            got="$(sed -n 's/^Premain-Class: //p' /tmp/manifest.txt | tr -d '\r')"
+            want="${PKG}.Agent"
+            [ "$got" = "$want" ] \
+              || { echo "::error::$f: Premain-Class is '$got', expected '$want'"; exit 1; }
 
-          echo "manifest OK"
+            echo "$f: manifest OK"
+          done
 
-      - name: Generate checksum
+      - name: Generate checksums
         shell: bash
         run: |
           set -euo pipefail
           cd build/libs
-          sha256sum "${{ steps.artifact.outputs.name }}" > "${{ steps.artifact.outputs.name }}.sha256"
-          cat "${{ steps.artifact.outputs.name }}.sha256"
+          # One combined file: sha256sum's output format is designed for it, and
+          # three artifacts would otherwise mean three separate attachments.
+          sha256sum \
+            "${{ steps.artifact.outputs.name }}" \
+            "${{ steps.artifact.outputs.exe }}" \
+            "${{ steps.artifact.outputs.sh }}" \
+            > SHA256SUMS
+          cat SHA256SUMS
+
+      # Release attachments are served as-is, so the .sh keeps its executable
+      # bit either way. The tarball is there for people who want all three in
+      # one download with permissions intact.
+      - name: Package (preserve executable bit)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd build/libs
+          tar czf "../${{ steps.artifact.outputs.stem }}.tar.gz" \
+            "${{ steps.artifact.outputs.name }}" \
+            "${{ steps.artifact.outputs.exe }}" \
+            "${{ steps.artifact.outputs.sh }}"
 
       - name: Read changelog (optional)
         id: changelog
@@ -141,10 +190,16 @@ jobs:
           echo "Version: $ver"
           gh release create "$TAG" \
             "build/libs/${JAR}" \
-            "build/libs/${JAR}.sha256" \
+            "build/libs/${EXE}" \
+            "build/libs/${SH}" \
+            "build/libs/SHA256SUMS" \
+            "build/${STEM}.tar.gz" \
             "${args[@]}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
           BODY: ${{ steps.changelog.outputs.body }}
           JAR: ${{ steps.artifact.outputs.name }}
+          EXE: ${{ steps.artifact.outputs.exe }}
+          SH: ${{ steps.artifact.outputs.sh }}
+          STEM: ${{ steps.artifact.outputs.stem }}

@@ -4,10 +4,20 @@ plugins {
 }
 
 group = 'io.github.pumpkinxd.hmcl_dl_unlocker'
-version = '0.0.1-alpha.2026.10.21'
+version = '0.0.1-beta.2026.10.21'
 
 repositories {
     mavenCentral()
+}
+
+configurations {
+    execjarTool {
+        canBeConsumed = false
+        canBeResolved = true
+        canBeDeclared = true
+        transitive = false
+        visible = false
+    }
 }
 
 dependencies {
@@ -17,6 +27,7 @@ dependencies {
     testImplementation platform('org.junit:junit-bom:6.0.0')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    execjarTool 'me.bechberger:execjar:0.1.2'
 }
 
 tasks.named('compileJava') {
@@ -47,7 +58,164 @@ tasks.named('shadowJar') {
 
 tasks.named('assemble') {
     dependsOn tasks.named('shadowJar')
+    if (!project.hasProperty('skipWrapped')) {
+        dependsOn tasks.named('makeWrapped')
+    }
 }
+
+def distDir = layout.buildDirectory.dir("libs")
+def fatJar = tasks.named('shadowJar').flatMap { it.archiveFile }
+
+tasks.register('makeWindowsExecutable') {
+    group('build')
+    dependsOn tasks.named('shadowJar')
+
+    def winOut = distDir.zip(fatJar) { dir, jar ->
+        dir.file(jar.asFile.name.replaceFirst(/\.jar$/, '.exe'))
+    }
+
+    String launch5j_baseUrl = project.findProperty('launch5j.url') ?: ''
+    String launch5j_version = project.findProperty('launch5j.version') ?: ''
+    String launch5j_arcNameIn = project.findProperty('launch5j.archiveName') ?: ''
+    String launch5j_sha256 = project.findProperty('launch5j.sha256') ?: ''
+
+    String launch5j_archiveUrl = (launch5j_baseUrl && launch5j_version && launch5j_arcNameIn)     \
+                ? "${launch5j_baseUrl.replaceAll(/\/+$/, '')}/download/${launch5j_version}/${launch5j_arcNameIn}" : ''
+
+    // Path of the exe inside the archive. x86 exes sit at the top level,
+    // 64-bit ones live in the x64/ subdirectory.
+    String launch5j_exePath = project.findProperty('launch5jExePath') ?:
+            'launch5j_x86_nogui_wrapped_registry_nowait.exe'
+
+    def tmpDir = layout.buildDirectory.dir('tmp/makeWindowsExecutable')
+    def archive = tmpDir.map { it.file(launch5j_arcNameIn ?: 'launch5j.zip') }
+    def extracted = tmpDir.map { it.dir('extracted') }
+
+    inputs.file(fatJar)
+    inputs.property('archiveUrl', launch5j_archiveUrl)
+    inputs.property('sha256', launch5j_sha256)
+    inputs.property('exePath', launch5j_exePath)
+
+    outputs.file(winOut)
+
+    doLast {
+        if (!launch5j_archiveUrl) {
+            throw new GradleException(
+                    'Missing launch5j.url / launch5j.version / launch5j.archiveName in gradle.properties. ' +
+                            'They are joined into: <url>/download/<version>/<archive>')
+        }
+
+        def arc = archive.get().asFile
+        if (!arc.isFile()) {
+            arc.parentFile.mkdirs()
+            logger.lifecycle "Downloading Launch5j: ${launch5j_archiveUrl}"
+            ant.get(src: launch5j_archiveUrl, dest: arc)
+        }
+
+        // Verify the whole archive. A truncated zip often unzips without
+        // complaining and silently yields a broken exe, so this is the only line
+        // of defence. On mismatch the cached file is deleted and re-downloaded.
+        if (launch5j_sha256) {
+            String actual = java.security.MessageDigest.getInstance('SHA-256')
+                    .digest(arc.bytes).encodeHex().toString()
+            if (!actual.equalsIgnoreCase(launch5j_sha256)) {
+                arc.delete()
+                throw new GradleException(
+                        "Launch5j archive checksum mismatch, cache deleted: ${arc}\n" +
+                                "expected: ${launch5j_sha256}\nactual:   ${actual}")
+            }
+            logger.lifecycle "Launch5j archive verified (${actual})"
+        } else {
+            logger.warn 'launch5j.sha256 not set, skipping integrity check'
+        }
+
+        def dest = extracted.get().asFile
+        project.sync {
+            from zipTree(arc)
+            into dest
+        }
+
+        File exe = new File(dest, launch5j_exePath)
+        if (!exe.isFile()) {
+            // Fallback: look one level down, in case the archive has an extra dir.
+            String wanted = new File(launch5j_exePath).name
+            exe = dest.listFiles()?.findResult { d ->
+                d.directory ? d.listFiles()?.find { it.isFile() && it.name == wanted } : null
+            }
+        }
+        if (!exe?.isFile()) {
+            def found = []
+            dest.eachDirRecurse { d -> d.listFiles()?.each { if (it.name.endsWith('.exe')) found << it } }
+            dest.listFiles()?.each { if (it.name.endsWith('.exe')) found << it }
+            throw new GradleException(
+                    "Exe not found in archive: ${launch5j_exePath}\n" +
+                            "Exes actually extracted:\n  " +
+                            "${found.collect { dest.toPath().relativize(it.toPath()) }.join('\n  ')}\n" +
+                            'Fix with -Pl5jExePath=<path inside archive>')
+        }
+        logger.lifecycle "Using Launch5j launcher: ${dest.toPath().relativize(exe.toPath())}"
+
+        // The exe must come first and the jar last, so the jar's EOCD lands at
+        // the very end of the file -- that is what lets java -jar / -javaagent
+        // find it by scanning backwards.
+        // Deliberately not using cat / copy / type: no cat on Windows, and cmd's
+        // copy /B is unavailable under PowerShell. Plain JVM streams, all platforms.
+        def out = winOut.get().asFile
+        out.parentFile.mkdirs()
+        out.withOutputStream { os ->
+            exe.withInputStream { os << it }
+            fatJar.get().asFile.withInputStream { os << it }
+        }
+        logger.lifecycle "Generated: ${out} (${out.length()} bytes)"
+    }
+}
+tasks.register('makeUnixExecutable', Exec) {
+    group('build')
+    dependsOn tasks.named('shadowJar')
+
+    def unixOut = distDir.zip(fatJar) { dir, jar ->
+        dir.file(jar.asFile.name.replaceFirst(/\.jar$/, '.sh'))
+    }
+
+    String execjar_minJava = project.findProperty('execjar.minJavaVersion') ?: '17'
+    String execjar_jvmOpts = project.findProperty('execjar.jvmOpts') ?: ''
+
+    inputs.file(fatJar)
+    inputs.property('minJavaVersion', execjar_minJava)
+    inputs.property('jvmOpts', execjar_jvmOpts)
+    outputs.file(unixOut)
+
+    doFirst {
+        def outFile = unixOut.get().asFile
+        outFile.parentFile.mkdirs()
+
+        executable ProcessHandle.current().info().command().orElse('java')
+
+        args '-jar', configurations.execjarTool.singleFile.absolutePath,
+                fatJar.get().asFile.absolutePath,
+                '-o', outFile.absolutePath,
+                '--min-java-version', execjar_minJava
+
+        if (execjar_jvmOpts) {
+            args '--jvm-opts', execjar_jvmOpts
+        }
+        if (project.hasProperty('validateShellcheck')) {
+            args '--validate-shellcheck'
+        }
+    }
+
+    doLast {
+        logger.lifecycle "Generated: ${unixOut.get().asFile} (${unixOut.get().asFile.length()} bytes)"
+    }
+}
+
+tasks.register('makeWrapped') {
+    group('build')
+    dependsOn tasks.named('makeWindowsExecutable')
+    dependsOn tasks.named('makeUnixExecutable')
+
+}
+
 
 test {
     useJUnitPlatform()
